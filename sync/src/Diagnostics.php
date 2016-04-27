@@ -4,10 +4,16 @@ namespace App;
 
 use Fn
   , App\Log
+  , App\Sync
   , Exception
+  , App\Daemon
+  , App\Message
   , PDOException
   , Pimple\Container
-  , App\Models\Migration as MigrationModel
+  , League\CLImate\CLImate
+  , App\Message\ErrorMessage
+  , App\Message\DiagnosticsMessage
+  , App\Model\Migration as MigrationModel
   , App\Exceptions\Fatal as FatalException
   , App\Exceptions\Terminate as TerminateException
   , App\Exceptions\MaxAllowedPacket as MaxAllowedPacketException
@@ -19,8 +25,13 @@ class Diagnostics
     private $di;
     private $cli;
     private $log;
-    private $config;
     private $console;
+
+    /**
+     * Statically set config used in static methods.
+     * @var array
+     */
+    static private $config;
 
     /**
      * Stores tests, their error messages, and statuses.
@@ -41,7 +52,6 @@ class Diagnostics
     {
         $this->di = $di;
         $this->cli = $di[ 'cli' ];
-        $this->config = $di[ 'config' ];
         $this->console = $di[ 'console' ];
         $this->log = $di[ 'log' ]->getLogger();
         $this->tests = [
@@ -49,33 +59,47 @@ class Diagnostics
                 'code' => 1,
                 'status' => NULL,
                 'message' => NULL,
-                'name' => 'log path is writable'
+                'name' => 'log path is writable',
+                'suggestion' =>
+                    'Check the permissions on the logging directory.'
             ],
             self::TEST_DB_CONN => [
                 'code' => 2,
                 'status' => NULL,
                 'message' => NULL,
-                'name' => 'database connection is alive'
+                'name' => 'database connection is alive',
+                'suggestion' =>
+                    'Make sure your SQL username and password are correct and '.
+                    'that you have a SQL database running.'
             ],
             self::TEST_DB_EXISTS => [
                 'code' => 3,
                 'status' => NULL,
                 'message' => NULL,
-                'name' => 'database was created'
+                'name' => 'database was created',
+                'suggestion' => 'You probably need to create the SQL database.'
             ],
             self::TEST_MAX_PACKET => [
                 'code' => 4,
                 'status' => NULL,
                 'message' => NULL,
-                'name' => 'max_allowed_packet is safe'
+                'name' => 'max_allowed_packet is safe',
+                'suggestion' =>
+                    'Update your max_allowed_packet in your SQL config file.'
             ],
             self::TEST_ATTACH_PATH => [
                 'code' => 5,
                 'status' => NULL,
                 'message' => NULL,
-                'name' => 'attachment path is writable'
+                'name' => 'attachment path is writable',
+                'suggestion' =>
+                    'Check the permissions on the attachment directory. This '.
+                    'directory is needed to save file attachments from your emails.'
             ]
         ];
+
+        // Set the config statically
+        self::$config = $di[ 'config' ];
     }
 
     /**
@@ -99,6 +123,12 @@ class Diagnostics
     }
 
     /**
+     * No-op used to instantiate class if we're not running this
+     * on startup.
+     */
+    public function init() {}
+
+    /**
      * Check if the log path is writable.
      */
     public function testLogPathWritable()
@@ -106,7 +136,7 @@ class Diagnostics
         $this->startTest( self::TEST_LOG_PATH );
 
         try {
-            $path = Log::preparePath( $this->config[ 'log' ][ 'path' ] );
+            $path = Log::preparePath( self::$config[ 'log' ][ 'path' ] );
             Log::checkLogPath( FALSE, $path );
             $this->endTest( STATUS_SUCCESS, self::TEST_LOG_PATH );
         }
@@ -123,7 +153,7 @@ class Diagnostics
         $this->startTest( self::TEST_DB_CONN );
 
         try {
-            $dbConfig = $this->config[ 'sql' ];
+            $dbConfig = self::$config[ 'sql' ];
             $dbConfig[ 'database' ] = '';
             $dbFactory = $this->di->raw( 'db_factory' );
             $db = $dbFactory( $this->di, $dbConfig );
@@ -281,10 +311,13 @@ class Diagnostics
         $message = ( $e )
             ? $e->getMessage()
             : "Testing ". $this->tests[ $test ][ 'name' ];
+        $this->tests[ $test ][ 'status' ] = $status;
+        $this->tests[ $test ][ 'message' ] = $message;
 
-        // If we're not in diagnostic mode, then use exceptions
+        // If we're not in diagnostic mode (and not daemon mode), then
+        // use exceptions
         if ( ! $this->console->diagnostics ) {
-            if ( $status === STATUS_ERROR ) {
+            if ( $status === STATUS_ERROR && ! $this->console->daemon ) {
                 throw new FatalException(
                     "Failed diagnostic test #$code, $message" );
             }
@@ -317,9 +350,6 @@ class Diagnostics
                 $this->cli->dim( $message );
                 break;
         }
-
-        $this->tests[ $test ][ 'status' ] = $status;
-        $this->tests[ $test ][ 'message' ] = $message;
     }
 
     /**
@@ -327,6 +357,13 @@ class Diagnostics
      */
     private function finish()
     {
+        if ( $this->console->daemon ) {
+            Message::send(
+                new DiagnosticsMessage(
+                    $this->tests
+                ));
+        }
+
         if ( ! $this->console->diagnostics ) {
             return;
         }
@@ -336,6 +373,25 @@ class Diagnostics
                 "There were errors encountered during the tests that ".
                 "prevent this application from running!" );
         }
+    }
+
+    /**
+     * Attempts to connect to the mail server using the new account
+     * settings from the prompt.
+     * @param Array $account Account credentials
+     * @throws Exception
+     */
+    static public function testImapConnection( Array $account )
+    {
+        $sync = new Sync;
+        $sync->setConfig( self::$config );
+        $sync->connect(
+            $account[ 'imap_host' ],
+            $account[ 'imap_port' ],
+            $account[ 'email' ],
+            $account[ 'password' ],
+            $folder = NULL,
+            $setRunning = FALSE );
     }
 
     /**
@@ -355,6 +411,15 @@ class Diagnostics
         $forwardException = FALSE )
     {
         if ( strpos( $e->getMessage(), "server has gone away" ) === FALSE ) {
+            if ( $di[ 'console' ]->daemon ) {
+                Message::send(
+                    new ErrorMessage(
+                        ERR_DATABASE,
+                        $e->getMessage(),
+                        "You probably didn't run the installation script."
+                    ));
+            }
+
             throw new TerminateException(
                 "System encountered an un-recoverable database error. ".
                 "Going to halt now, please see the log file for info." );

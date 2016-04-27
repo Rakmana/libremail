@@ -4,8 +4,8 @@ namespace App;
 
 use App\Daemon
   , Pimple\Container
-  , \App\Models\Account as AccountModel
-  , \App\Exceptions\NoAccounts as NoAccountsException;
+  , App\Message\PidMessage
+  , App\Model\Account as AccountModel;
 
 /**
  * Runs at the start of the application and performs various
@@ -28,10 +28,7 @@ class Startup
         $this->log->info( "Process ID: ". getmypid() );
 
         if ( $this->console->daemon ) {
-            fwrite( STDOUT, json_encode([
-                'pid' => getmypid(),
-                'type' => Daemon::MESSAGE_PID
-            ]));
+            Message::send( new PidMessage( getmypid() ) );
         }
 
         $this->checkIfAccountsExist();
@@ -50,18 +47,14 @@ class Startup
         $this->log->info( "Process ID: ". getmypid() );
 
         if ( $this->console->daemon ) {
-            fwrite( STDOUT, json_encode([
-                'pid' => getmypid(),
-                'type' => Daemon::MESSAGE_PID
-            ]));
+            Message::send( new PidMessage( getmypid() ) );
         }
     }
 
     /**
      * Check if any accounts exist in the database. If not, and
      * if we're in interactive mode, then prompt the user to add
-     * one. Otherwise log and exit.
-     * @throws NoAccountsException
+     * one.
      */
     private function checkIfAccountsExist()
     {
@@ -71,9 +64,6 @@ class Startup
         if ( ! $accounts ) {
             if ( $this->console->interactive ) {
                 $this->console->createNewAccount();
-            }
-            else {
-                throw new NoAccountsException;
             }
         }
     }

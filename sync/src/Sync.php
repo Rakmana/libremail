@@ -9,15 +9,18 @@ namespace App;
 use Fn
   , DateTime
   , Exception
+  , App\Daemon
+  , App\Message
   , PDOException
   , Monolog\Logger
   , Pb\Imap\Mailbox
   , Pimple\Container
   , League\CLImate\CLImate
-  , App\Models\Folder as FolderModel
-  , App\Models\Account as AccountModel
-  , App\Models\Message as MessageModel
-  , App\Models\Migration as MigrationModel
+  , App\Message\NoAccountsMessage
+  , App\Model\Folder as FolderModel
+  , App\Model\Account as AccountModel
+  , App\Model\Message as MessageModel
+  , App\Model\Migration as MigrationModel
   , App\Exceptions\Error as ErrorException
   , App\Exceptions\Fatal as FatalException
   , App\Exceptions\Terminate as TerminateException
@@ -171,6 +174,7 @@ class Sync
             // will pick up once the user creates an account and a
             // SIGCONT is sent to this process.
             if ( $this->daemon ) {
+                Message::send( new NoAccountsMessage );
                 return TRUE;
             }
 
@@ -224,6 +228,7 @@ class Sync
         }
 
         $this->checkForHalt();
+        $this->stats->setActiveAccount( $account->email );
         $this->log->info( "Starting sync for {$account->email}" );
 
         try {
@@ -313,9 +318,10 @@ class Sync
      * @param string $email
      * @param string $password
      * @param string $folder Optional, like "INBOX"
+     * @param bool $setRunning Optional
      * @throws MissingIMAPConfigException
      */
-    public function connect( $host, $port, $email, $password, $folder = NULL )
+    public function connect( $host, $port, $email, $password, $folder = NULL, $setRunning = TRUE )
     {
         // Check the attachment directory is writeable
         $attachmentsPath = $this->checkAttachmentsPath( $email );
@@ -334,7 +340,10 @@ class Sync
             $folder,
             $attachmentsPath );
         $this->mailbox->getImapStream();
-        $this->setRunning( TRUE );
+
+        if ( $setRunning === TRUR ) {
+            $this->setRunning( TRUE );
+        }
     }
 
     public function disconnect()
@@ -614,12 +623,14 @@ class Sync
             // Select the folder's mailbox, this is sent to the
             // messages sync library to perform operations on
             $this->mailbox->select( $folder->name );
+            $this->stats->setActiveFolder( $folder->name );
             $newIds = $this->mailbox->getUniqueIds();
             $savedIds = $messageModel->getSyncedIdsByFolder(
                 $account->getId(),
                 $folder->getId() );
             $this->downloadMessages( $newIds, $savedIds, $folder, $options );
             $this->markDeleted( $newIds, $savedIds, $folder, $options );
+            $this->stats->unsetActiveFolder();
             $this->checkForHalt();
         }
         catch ( PDOException $e ) {
@@ -629,6 +640,7 @@ class Sync
             throw $e;
         }
         catch ( Exception $e ) {
+            $this->stats->unsetActiveFolder();
             $this->log->error( substr( $e->getMessage(), 0, 500 ) );
             $retryCount = $this->retriesMessages[ $account->email ];
             $waitSeconds = $this->config[ 'app' ][ 'sync' ][ 'wait_seconds' ];

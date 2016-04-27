@@ -11,6 +11,7 @@
 use App\Log
   , App\Daemon
   , App\Command
+  , App\Message
   , App\Constants
   , Pimple\Container
   , Exception as Exception
@@ -78,10 +79,14 @@ $di[ 'loop' ] = Factory::create();
 // Set up the command handler
 $di[ 'command' ] = new Command( $di[ 'emitter' ], $di[ 'log' ] );
 
+// Statically set Message logging service
+Message::setLog( $di[ 'log' ]->getLogger() );
+
 // Set up the signal handler to shutdown
 $TERMINATE = function () {
     throw new TerminateException;
 };
+
 // Graceful shutdown
 $HALT = function () use ( $di ) {
     if ( isset( $di[ 'daemon' ] ) && $di[ 'daemon' ] ) {
@@ -98,6 +103,7 @@ $pcntl->on( SIGQUIT, $TERMINATE );
 
 // Daemon manages the sync and websocket processes
 $di[ 'daemon' ] = new Daemon(
+    $di[ 'log' ],
     $di[ 'loop' ],
     $di[ 'emitter' ],
     $di[ 'console' ],
@@ -140,9 +146,30 @@ $di[ 'emitter' ]->addListener(
 
 // Triggered to update the stats to all websocket connections
 $di[ 'emitter' ]->addListener(
-    EV_BROADCAST_STATS,
+    EV_BROADCAST_MSG,
     function ( Event $event ) use ( $di ) {
-        $di[ 'daemon' ]->broadcastStats( $event->getStats() );
+        $di[ 'daemon' ]->broadcast( $event->getMessage() );
+    });
+
+// Triggered to wake up a sleeping sync process
+$di[ 'emitter' ]->addListener(
+    EV_CONTINUE_SYNC,
+    function ( Event $event ) use ( $di ) {
+        $di[ 'daemon' ]->continueSync();
+    });
+
+// Triggered to send stats update (SIGUSR2)
+$di[ 'emitter' ]->addListener(
+    EV_POLL_STATS,
+    function ( Event $event ) use ( $di ) {
+        $di[ 'daemon' ]->pollStats();
+    });
+
+// Sends a health report about the sync/server processes
+$di[ 'emitter' ]->addListener(
+    EV_POLL_DAEMON,
+    function ( Event $event ) use ( $di ) {
+        $di[ 'daemon' ]->broadcastHealth();
     });
 
 // Trigger the events to load the timers
@@ -151,11 +178,10 @@ $di[ 'emitter' ]->dispatch( EV_START_SERVER );
 
 // Run the loop until we hit a halt signal
 try {
-    $di[ 'loop' ]->run();
-}
-// Ignore these but log them
-catch ( BadCommandException $e ) {
-    $di[ 'log' ]->getLogger()->addNotice( $e->getMessage() );
+    runLoop: {
+        $di[ 'loop' ]->stop();
+        $di[ 'loop' ]->run();
+    }
 }
 // Gracefully exit if we're terminated
 catch ( TerminateException $e ) {

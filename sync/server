@@ -9,17 +9,23 @@
  * or (more commonly) it's invoked via the daemon script.
  */
 use App\Log
+  , App\Model
   , App\Daemon
+  , App\Message
   , App\Startup
   , App\Constants
+  , App\RatchetApp
+  , App\Diagnostics
   , Pimple\Container
+  , Slim\PDO\Database
   , App\Server\WebServer
   , App\Server\StatsServer
   , Exception as Exception
   , React\EventLoop\Factory
-  , Ratchet\App as RatchetApp
   , App\Console\ServerConsole
   , MKraemer\ReactPCNTL\PCNTL
+  , PDOException as PDOException
+  , Symfony\Component\Routing\Route
   , App\Exceptions\Terminate as TerminateException;
 
 // Set up paths and constants
@@ -47,6 +53,11 @@ $di = new Container();
 // Store the configuration as a service
 $di[ 'config' ] = $config;
 
+// Diagnostic test service
+$di[ 'diagnostics' ] = function ( $c ) {
+    return new Diagnostics( $c );
+};
+
 // Console/CLI service
 $di[ 'console' ] = new ServerConsole( $config );
 $di[ 'cli' ] = function ( $c ) {
@@ -68,8 +79,19 @@ $di[ 'log' ]->init();
 // Parse the CLI
 $di[ 'console' ]->init();
 
+// Boot the diagnostics service
+$di[ 'diagnostics' ]->init();
+
 // React event loop, used for Ratchet.
 $di[ 'loop' ] = Factory::create();
+
+// Statically set the services in the base model
+Model::setCLI( $di[ 'cli' ] );
+Model::setConfig( $di[ 'config' ] );
+Model::setLog( $di[ 'log' ]->getLogger() );
+
+// Set Message service
+Message::setLog( $di[ 'log' ]->getLogger() );
 
 // Set up the signal handler to shutdown
 $HALT = function () use ( $di ) {
@@ -86,8 +108,31 @@ $pcntl->on( SIGINT, $HALT );
 $pcntl->on( SIGTERM, $HALT );
 $pcntl->on( SIGQUIT, $HALT );
 
+// PDO factory, this uses Slim-PDO as a wrapper
+$di[ 'db_factory' ] = $di->factory( function ( $c, $config = NULL ) {
+    $dbConfig = ( $config ) ?: $c[ 'config' ][ 'sql' ];
+    $dsn = sprintf(
+        "mysql:host=%s;dbname=%s;charset=%s",
+        $dbConfig[ 'hostname' ],
+        $dbConfig[ 'database' ],
+        $dbConfig[ 'charset' ] );
+
+    try {
+        return new Database(
+            $dsn,
+            $dbConfig[ 'username' ],
+            $dbConfig[ 'password' ] );
+    }
+    catch ( PDOException $e ) {
+        throw new PDOException(
+            "There was a problem connecting to the database. ".
+            "Are you sure it exists? Here are the details: ".
+            $e->getMessage() );
+    }
+});
+
 // Create a new socket server handler
-$di[ 'server.web' ] = new WebServer( $di[ 'log' ] );
+$di[ 'server.web' ] = new WebServer( $di[ 'log' ], $di[ 'config' ] );
 $di[ 'server.stats' ] = new StatsServer( $di[ 'log' ], $di[ 'loop' ] );
 
 // Ratchet web server instance
@@ -98,22 +143,48 @@ $di[ 'ratchet' ] = new RatchetApp(
     $di[ 'loop' ] );
 // Socket route
 $di[ 'ratchet' ]->route(
-    $config[ 'server' ][ 'endpoint' ][ 'stats' ],
+    ENDPOINT_STATS,
     $di[ 'server.stats' ],
     $config[ 'server' ][ 'allowed_origins' ]);
 // Web route
 $di[ 'ratchet' ]->route(
-    $config[ 'server' ][ 'endpoint' ][ 'web' ],
+    ENDPOINT_WEB,
     $di[ 'server.web' ],
     $config[ 'server' ][ 'allowed_origins' ]);
+// Catch-all route
+$di[ 'ratchet' ]->route(
+    new Route( '/{any}', [], [ 'any' => '.*' ] ),
+    $di[ 'server.web' ],
+    $config[ 'server' ][ 'allowed_origins' ] );
 
 // Run the loop until we hit a halt signal
 try {
+    // PDO connection. This attempts to connect to the database.
+    // If it fails here, the script will halt.
+    $di[ 'db' ] = $di[ 'db_factory' ];
+
+    // This attempts to connect to the database. If it
+    // fails here, the script will halt.
+    Model::setDb( $di[ 'db_factory' ] );
+
+    // Kick off the server application
     $startup = new Startup( $di );
     $startup->runServer();
-    $di[ 'ratchet' ]->run();
+
+    runLoop: {
+        $di[ 'loop' ]->stop();
+        $di[ 'ratchet' ]->run();
+    }
+}
+// Uncaught PDO exceptions, this should only be the
+// connection error.
+catch ( PDOException $e ) {
+    $di[ 'log' ]->displayError( $e );
+    Diagnostics::checkDatabaseException( $di, $e );
+    goto runLoop;
 }
 // Gracefully exit if we're terminated
 catch ( TerminateException $e ) {
+    $di[ 'log' ]->getLogger()->addInfo( $e->getMessage() );
     exit( 0 );
 }

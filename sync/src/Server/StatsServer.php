@@ -3,29 +3,35 @@
 namespace App\Server;
 
 use App\Log
+  , App\Task
   , Exception
-  , App\Server
   , App\Command
+  , App\Message
   , SplObjectStorage
   , React\Stream\Stream
   , Ratchet\ConnectionInterface
   , React\EventLoop\LoopInterface
-  , Ratchet\MessageComponentInterface;
+  , Ratchet\MessageComponentInterface
+  , App\Traits\JsonMessage as JsonMessageTrait;
 
-class StatsServer extends Server implements MessageComponentInterface
+class StatsServer implements MessageComponentInterface
 {
+    private $log;
     private $loop;
     private $message;
     private $clients;
-    private $isReading;
+    private $lastMessage;
     // Streams
     private $read;
     private $write;
 
+    // For JSON message handling
+    use JsonMessageTrait;
+
     public function __construct ( Log $log, LoopInterface $loop )
     {
         $this->loop = $loop;
-        parent::__construct( $log );
+        $this->log = $log->getLogger();
         $this->clients = new SplObjectStorage;
 
         // Set up the STDIN and STDOUT streams
@@ -34,6 +40,8 @@ class StatsServer extends Server implements MessageComponentInterface
 
     public function broadcast( $message )
     {
+        $this->lastMessage = $message;
+
         foreach ( $this->clients as $client ) {
             $client->send( $message );
         }
@@ -43,6 +51,15 @@ class StatsServer extends Server implements MessageComponentInterface
     {
         $this->log->debug( "New socket connection opened from #". $conn->resourceId );
         $this->clients->attach( $conn );
+
+        if ( $this->lastMessage ) {
+            $conn->send( $this->lastMessage );
+        }
+
+        // Send a command to return the status of the sync script.
+        // If the daemon gets this and the sync script isn't running,
+        // then it'll trigger an event to broadcast an offline message.
+        $this->write->write( Command::getMessage( Command::HEALTH ) );
     }
 
     public function onClose( ConnectionInterface $conn )
@@ -61,7 +78,7 @@ class StatsServer extends Server implements MessageComponentInterface
     public function onMessage( ConnectionInterface $from, $message )
     {
         $this->log->debug( "New socket message from #{$from->resourceId}: $message" );
-        $this->processMessage( $message );
+        $this->processMessage( $message, NULL );
     }
 
     private function setupInputStreams()
@@ -72,32 +89,17 @@ class StatsServer extends Server implements MessageComponentInterface
         // detect this format and keep reading until we reach the
         // end of the JSON stream.
         $this->read->on( 'data', function ( $data ) {
-            $message = $this->processMessage( $data );
+            $message = $this->processMessage( $data, NULL );
         });
 
         $this->write = new Stream( STDOUT, $this->loop );
     }
 
-    private function processMessage( $message )
+    private function processMessage( $message, $key )
     {
-        if ( substr( $message, 0, 1 ) === "{" ) {
-            $this->message = "";
-            $this->isReading = TRUE;
-        }
-
-        if ( $this->isReading ) {
-            $this->message .= $message;
-
-            if ( substr( $message, -1 ) === "}" ) {
-                $this->isReading = FALSE;
-                $this->broadcast( $this->message );
-                $this->message = NULL;
-            }
-
-            return;
-        }
-
-        if ( ! $this->write ) {
+        if ( ! $this->write 
+            || ! ($parsed = $this->parseMessage( $message )) )
+        {
             return;
         }
 
@@ -105,10 +107,29 @@ class StatsServer extends Server implements MessageComponentInterface
         // restart the sync (wake up), force-fetch the stats,
         // shutdown the sync, etc. Send this to the daemon. If it's
         // a valid command, then send it to STDOUT.
-        $command = new Command();
-
-        if ( $command->isValid( $message ) ) {
-            $this->write->write( $message );
+        if ( (new Command)->isValid( $parsed ) ) {
+            $this->write->write( $parsed );
         }
+
+        // If it's a message of type 'task', execute that task
+        if ( Message::isValid( $parsed ) ) {
+            try {
+                $message = Message::make( $parsed );
+
+                if ( $message->getType() == Message::TASK ) {
+                    $task = Task::make( $message->task, $message->data );
+                    $task->run();
+                }
+            }
+            catch ( Exception $e ) {
+                $this->log->notice( $e->getMessage() );
+                return;
+            }
+        }
+    }
+
+    private function handleMessage( $json, $key )
+    {
+        $this->broadcast( $json );
     }
 }

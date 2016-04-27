@@ -2,17 +2,24 @@
 
 namespace App;
 
-use Exception
+use App\Log
+  , Exception
   , App\Command
-  , App\Events\StatsEvent
+  , App\Message
+  , App\Events\MessageEvent
   , App\Console\DaemonConsole
+  , App\Message\HealthMessage
   , React\ChildProcess\Process
+  , App\Message\AbstractMessage
   , React\EventLoop\LoopInterface
+  , App\Traits\JsonMessage as JsonMessageTrait
   , App\Exceptions\Terminate as TerminateException
+  , App\Exceptions\BadCommand as BadCommandException
   , Symfony\Component\EventDispatcher\EventDispatcher as Emitter;
 
 class Daemon
 {
+    private $log;
     // Flag to not attempt to restart process
     private $halt;
     // Reference to the React event loop
@@ -21,23 +28,26 @@ class Daemon
     private $emitter;
     private $console;
     private $command;
-    // Used for internal message passing
-    private $message;
-    private $isReading;
+    // Flag if there are no accounts in the database
+    private $noAccounts;
     // Stored to send signals to
     private $syncProcess;
+    // Log of diagnostic test results
+    private $diagnostics;
     // Ratchet websocket server
     private $webServerProcess;
     // References to true PIDs
     private $processPids = [];
     private $processRestartInterval = [];
 
+    // For JSON message handling
+    use JsonMessageTrait;
+
     const PROC_SYNC = 'sync';
     const PROC_SERVER = 'server';
-    const MESSAGE_PID = 'pid';
-    const MESSAGE_STATS = 'stats';
 
     public function __construct(
+        Log $log,
         LoopInterface $loop,
         Emitter $emitter,
         DaemonConsole $console,
@@ -49,6 +59,7 @@ class Daemon
         $this->emitter = $emitter;
         $this->console = $console;
         $this->command = $command;
+        $this->log = $log->getLogger();
         $this->processRestartInterval = [
             PROC_SYNC => $config[ 'restart_interval' ][ PROC_SYNC ],
             PROC_SERVER => $config[ 'restart_interval' ][ PROC_SERVER ]
@@ -152,9 +163,11 @@ class Daemon
             ? $decay * $currentInterval
             : $restartMax;
 
-        $this->loop->addTimer( $nextInterval, function ( $timer ) {
-            $this->emitter->dispatch( $event );
-        });
+        $this->loop->addTimer(
+            $nextInterval,
+            function ( $timer ) use ( $event ) {
+                $this->emitter->dispatch( $event );
+            });
 
         // Update the restart interval for next time. At some point,
         // this needs to reset back to the starting interval.
@@ -162,7 +175,31 @@ class Daemon
         $this->processRestartInterval[ $process ] = $nextInterval;
     }
 
-    public function broadcastStats( $stats )
+    /**
+     * Sends a SIGCONT to the sync process to wake it up.
+     */
+    public function continueSync()
+    {
+        if ( isset( $this->processPids[ PROC_SYNC ] ) ) {
+            posix_kill( $this->processPids[ PROC_SYNC ], SIGCONT );
+        }
+    }
+
+    /**
+     * Sends a SIGUSR2 to the sync process to get a stats update.
+     */
+    public function pollStats()
+    {
+        if ( isset( $this->processPids[ PROC_SYNC ] ) ) {
+            posix_kill( $this->processPids[ PROC_SYNC ], SIGUSR2 );
+        }
+    }
+
+    /**
+     * Sends a message to the server process to forward to any clients.
+     * @param AbstractMessage $message
+     */
+    public function broadcast( AbstractMessage $message )
     {
         if ( ! $this->webServerProcess ) {
             return FALSE;
@@ -171,8 +208,30 @@ class Daemon
         // Resume the stdin stream, send the message and then pause
         // it again.
         $this->webServerProcess->stdin->resume();
-        $this->webServerProcess->stdin->write( json_encode( $stats ) );
+        $this->webServerProcess->stdin->write(
+            Message::packJson(
+                $message->toArray()
+            ));
         $this->webServerProcess->stdin->pause();
+    }
+
+    /**
+     * Sends a health report for the sync process and app.
+     */
+    public function broadcastHealth()
+    {
+        $this->broadcast(
+            new HealthMessage(
+                $this->diagnostics, [
+                    PROC_SYNC => ( isset( $this->processPids[ PROC_SYNC ] ) )
+                        ? TRUE
+                        : FALSE,
+                    PROC_SERVER => ( isset( $this->processPids[ PROC_SERVER ] ) )
+                        ? TRUE
+                        : FALSE
+                ],
+                $this->noAccounts
+            ));
     }
 
     public function halt()
@@ -192,50 +251,59 @@ class Daemon
 
     private function processMessage( $message, $process )
     {
-        if ( substr( $message, 0, 1 ) === "{" ) {
-            $this->message = "";
-            $this->isReading = TRUE;
-        }
-
-        if ( $this->isReading ) {
-            $this->message .= $message;
-
-            if ( substr( $message, -1 ) === "}" ) {
-                $this->isReading = FALSE;
-                $message = @json_decode( $this->message );
-                $this->message = NULL;
-                $this->handleMessage( $message, $process );
-            }
-
+        if ( ! ($parsed = $this->parseMessage( $message, $process )) ) {
             return;
         }
 
         // If the message was a command from a sub-process, then
         // handle that command. Otherwise print this message.
-        if ( $this->handleCommand( $message ) ) {
+        if ( $this->handleCommand( $parsed ) ) {
             return;
         }
 
-        fwrite( STDOUT, $message );
+        fwrite( STDOUT, $parsed );
     }
 
     /**
      * Reads in a JSON message from one of the child processes.
-     * The message expects certain fields to be set:
-     *   type: 'pid' or 'stats'
-     * @param stdClass $message
+     * The message expects certain fields to be set depending on
+     * the type.
+     * @param string $json
      * @param string $process
      */
-    private function handleMessage( $message, $process )
+    private function handleMessage( $json, $process )
     {
-        switch ( $message->type ) {
-            case self::MESSAGE_PID:
+        if ( ! Message::isValid( $json ) ) {
+            $this->log->addNotice( "Invalid message sent to Daemon: $json" );
+            return FALSE;
+        }
+
+        try {
+            $message = Message::make( $json );
+        }
+        catch ( Exception $e ) {
+            return FALSE;
+        }
+
+        switch ( $message->getType() ) {
+            case Message::PID:
                 $this->processPids[ $process ] = $message->pid;
                 break;
-            case self::MESSAGE_STATS:
+            case Message::STATS:
+                if ( $message->accounts ):
+                    $this->noAccounts = false;
+                endif;
+                // no break, broadcast
+            case Message::ERROR:
                 $this->emitter->dispatch(
-                    EV_BROADCAST_STATS,
-                    new StatsEvent( $message ) );
+                    EV_BROADCAST_MSG,
+                    new MessageEvent( $message ) );
+                break;
+            case Message::NO_ACCOUNTS:
+                $this->noAccounts = true;
+                break;
+            case Message::DIAGNOSTICS:
+                $this->diagnostics = $message->tests;
                 break;
         }
     }
@@ -250,7 +318,15 @@ class Daemon
     private function handleCommand( $message )
     {
         if ( $this->command->isValid( $message ) ) {
-            $this->command->run( $message );
+            // Ignore these but log them
+            try {
+                $this->command->run( $message );
+            }
+            catch ( BadCommandException $e ) {
+                $this->log->addNotice( $e->getMessage() );
+                return FALSE;
+            }
+
             return TRUE;
         }
 
