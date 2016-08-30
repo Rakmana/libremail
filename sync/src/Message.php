@@ -5,14 +5,17 @@ namespace App;
 use Fn
   , Exception
   , Monolog\Logger
+  , App\Server\StatsServer
   , App\Message\PidMessage
   , App\Message\TaskMessage
   , App\Message\ErrorMessage
   , App\Message\StatsMessage
   , App\Message\HealthMessage
+  , App\Message\AccountMessage
   , App\Message\AbstractMessage
   , App\Message\NoAccountsMessage
   , App\Message\DiagnosticsMessage
+  , App\Message\NotificationMessage
   , App\Exceptions\Validation as ValidationException;
 
 class Message
@@ -23,8 +26,10 @@ class Message
     const STATS = 'stats';
     const ERROR = 'error';
     const HEALTH = 'health';
+    const ACCOUNT = 'account';
     const NO_ACCOUNTS = 'no_accounts';
     const DIAGNOSTICS = 'diagnostics';
+    const NOTIFICATION = 'notification';
 
     // Injected during service registration
     static protected $log;
@@ -35,8 +40,10 @@ class Message
         self::STATS,
         self::ERROR,
         self::HEALTH,
+        self::ACCOUNT,
         self::NO_ACCOUNTS,
-        self::DIAGNOSTICS
+        self::DIAGNOSTICS,
+        self::NOTIFICATION
     ];
 
     static function setLog( Logger $log )
@@ -70,14 +77,23 @@ class Message
         return TRUE;
     }
 
-    static public function send( AbstractMessage $message )
+    /**
+     * If a server is provided, broadcast the message directly.
+     */
+    static public function send( AbstractMessage $message, StatsServer $server = NULL )
     {
+        if ( $server ) {
+            $server->broadcast( json_encode( $message->toArray() ) );
+            return;
+        }
+
         return self::writeJson( $message->toArray() );
     }
 
     static public function writeJson( $json )
     {
         fwrite( STDOUT, self::packJson( $json ) );
+        flush();
     }
 
     static public function packJson( $json )
@@ -147,8 +163,14 @@ class Message
                         $m->tests,
                         $m->procs,
                         $m->no_accounts );
+                case self::ACCOUNT:
+                    Fn\expects( $m )->toHave([ 'locked' ]);
+                    return new AccountMessage( $m->locked );
                 case self::NO_ACCOUNTS:
                     return new NoAccountsMessage;
+                case self::NOTIFICATION:
+                    Fn\expects( $m )->toHave([ 'status', 'message' ]);
+                    return new NotificationMessage( $m->status, $m->message );
                 case self::DIAGNOSTICS:
                     Fn\expects( $m )->toHave([ 'tests' ]);
                     return new DiagnosticsMessage( $m->tests );
