@@ -37,12 +37,24 @@ return function ( $root ) {
 
     function render ( d ) {
         var i;
-        var folderNames = Object.keys( d.accounts[ d.account ] );
-        var folders = formatFolders( d.accounts[ d.account ], d.active );
+        var folders;
+        var folderNames;
+
+        if ( ! d.account
+            || ! d.accounts
+            || ! Object.keys( d.accounts ).length )
+        {
+            return;
+        }
+
+        folderNames = Object.keys( d.accounts[ d.account ] );
+        folders = formatFolders( d.accounts[ d.account ], d.active );
 
         // If we already rendered the folders, just perform
         // an update on the folder meta.
-        if ( arraysEqual( folderList, folderNames ) ) {
+        if ( folderList.length
+            && arraysEqual( folderList, folderNames ) )
+        {
             update( folders, d.active );
         }
         else {
@@ -97,6 +109,11 @@ return function ( $root ) {
 
         for ( i in folders ) {
             node = document.getElementById( folders[ i ].id );
+
+            if ( ! node ) {
+                continue;
+            }
+
             node.innerHTML = Mustache.render( tpl.folder, folders[ i ] );
 
             if ( ( ! active && ! activeFlag )
@@ -172,8 +189,14 @@ return function ( $root ) {
     }
 
     function scrollTo ( id ) {
+        var yPos;
         var node = document.getElementById( id );
-        var yPos = yPosition( node );
+
+        if ( ! node ) {
+            return;
+        }
+
+        yPos = yPosition( node );
 
         // If the element is fully visible, then don't scroll
         if ( yPos + node.clientHeight < window.innerHeight + window.scrollY

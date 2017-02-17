@@ -7,6 +7,7 @@
 .folder {
     width: 25%;
     padding: 0.5rem;
+    position: relative;
     box-sizing: border-box;
     transition: background-color 0.25s ease;
 }
@@ -15,11 +16,32 @@
     background: #d6a70e;
 }
 
+.folder.incomplete:not(.active) .top {
+    color: #aaa;
+    background: rgba(214, 167, 14, 0.1);
+}
+
+.folder.incomplete:not(.active) .bottom {
+    color: #777;
+    background: rgba(214, 167, 14, 0.1);
+}
+
+.folder.incomplete:not(.active) .bottom .count {
+    background: transparent;
+}
+
+.folder .progress {
+    top: 0;
+    left: 0;
+    z-index: 1;
+    height: 0.4rem;
+    position: absolute;
+}
+
 .folder .top {
     color: #aaa;
     font-size: 1.4rem;
     line-height: 2rem;
-    position: relative;
     background: #2d2d2d;
     padding: 0.4rem 0.8rem 0;
 }
@@ -29,19 +51,6 @@
     position: relative;
     overflow-x: hidden;
     white-space: nowrap;
-}
-
-.folder .top .progress {
-    top: 0;
-    left: 0;
-    z-index: 1;
-    width: 100%;
-    height: 0.3rem;
-    position: absolute;
-}
-
-.folder .top .progress.active {
-    background-color: #4da74d;
 }
 
 .folder .bottom {
@@ -67,6 +76,11 @@
     animation-iteration-count: infinite;
 }
 
+.folder.active.incomplete .progress {
+    /* Not using this now */
+    /* background-color: #fffaad; */
+}
+
 .folder.active.incomplete .top,
 .folder.active.incomplete .bottom,
 .folder.active.incomplete .bottom .count {
@@ -80,4 +94,12 @@
   50%  { background: #d6a70e; }
   75%  { background: #f4c74b; }
   100% { background: #d6a70e; }
+}
+
+.folders .none {
+    color: #999;
+    padding: 1rem 2rem;
+    text-align: center;
+    margin: 20% auto 0;
+    background-color: #393939;
 }

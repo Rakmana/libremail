@@ -17,9 +17,11 @@ use Fn
   , Pimple\Container
   , League\CLImate\CLImate
   , App\Message\NoAccountsMessage
+  , App\Message\NotificationMessage
   , App\Model\Folder as FolderModel
   , App\Model\Account as AccountModel
   , App\Model\Message as MessageModel
+  , App\Exceptions\Stop as StopException
   , App\Model\Migration as MigrationModel
   , App\Exceptions\Error as ErrorException
   , App\Exceptions\Fatal as FatalException
@@ -36,6 +38,7 @@ class Sync
     private $cli;
     private $log;
     private $halt;
+    private $stop;
     private $wake;
     private $sleep;
     private $config;
@@ -46,6 +49,7 @@ class Sync
     private $mailbox;
     private $retries;
     private $interactive;
+    private $activeAccount;
     private $maxRetries = 5;
     private $retriesFolders;
     private $retriesMessages;
@@ -170,6 +174,9 @@ class Sync
         }
 
         if ( ! $accounts ) {
+$this->log->debug( "No accounts found" );
+            $this->stats->setActiveAccount( NULL );
+
             // If we're in daemon mode, just go to sleep. The script
             // will pick up once the user creates an account and a
             // SIGCONT is sent to this process.
@@ -220,14 +227,18 @@ class Sync
     public function runAccount( AccountModel $account, $options = [] )
     {
         if ( $this->retries[ $account->email ] > $this->maxRetries ) {
-            $this->log->notice(
+            $message =
                 "The account '{$account->email}' has exceeded the max ".
                 "amount of retries after failure ({$this->maxRetries}) ".
-                "and is no longer being attempted to sync again." );
+                "and is no longer being attempted to sync again.";
+            $this->log->notice( $message );
+            $this->sendMessage( $message );
+
             return FALSE;
         }
 
         $this->checkForHalt();
+$this->log->debug( "Setting active email: ". $account->email );
         $this->stats->setActiveAccount( $account->email );
         $this->log->info( "Starting sync for {$account->email}" );
 
@@ -289,6 +300,9 @@ class Sync
         catch ( FatalException $e ) {
             $this->log->critical( $e->getMessage() );
             exit( 1 );
+        }
+        catch ( StopException $e ) {
+            throw $e;
         }
         catch ( TerminateException $e ) {
             throw $e;
@@ -383,9 +397,15 @@ class Sync
         }
     }
 
+    public function stop()
+    {
+        $this->halt = TRUE;
+    }
+
     public function wake()
     {
         $this->wake = TRUE;
+        $this->halt = FALSE;
     }
 
     /**
@@ -448,6 +468,9 @@ class Sync
             $this->removeOldFolders( $folderList, $savedFolders, $account );
         }
         catch ( PDOException $e ) {
+            throw $e;
+        }
+        catch ( StopException $e ) {
             throw $e;
         }
         catch ( TerminateException $e ) {
@@ -636,6 +659,9 @@ class Sync
         catch ( PDOException $e ) {
             throw $e;
         }
+        catch ( StopException $e ) {
+            throw $e;
+        }
         catch ( TerminateException $e ) {
             throw $e;
         }
@@ -806,13 +832,28 @@ class Sync
         }
     }
 
+    private function sendMessage( $message, $status = STATUS_ERROR )
+    {
+        Message::send( new NotificationMessage( $status, $message ) );
+    }
+
     private function checkForHalt()
     {
         pcntl_signal_dispatch();
 
         if ( $this->halt === TRUE ) {
             $this->disconnect();
-            throw new TerminateException;
+            $this->stats->setActiveAccount( NULL );
+
+            // If there was a stop command issued, then don't terminate
+            if ( $this->stop === TRUE ) {
+                throw new StopException;
+            }
+
+            // If we just want to sleep, then don't terminate
+            if ( $this->sleep !== TRUE ) {
+                throw new TerminateException;
+            }
         }
     }
 

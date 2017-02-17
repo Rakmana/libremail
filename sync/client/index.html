@@ -63,9 +63,19 @@
                             <i class="icon-restart"></i>
                             Restart
                         </button>
-                        <button class="account">
-                            <i class="icon-cog"></i>
-                        </button>
+                        <div class="dropdown u-pull-right">
+                            <button id="account-options">
+                                <i class="icon-cog"></i>
+                            </button>
+                            <ul class="right-menu">
+                                <li>
+                                    <a href="javascript:;" id="account-edit">Edit Account</a>
+                                </li>
+                                <li>
+                                    <a href="javascript:;" id="account-remove">Remove Account</a>
+                                </li>
+                            </ul>
+                        </div>
                     </section>
                 </div>
             </div>
@@ -113,14 +123,14 @@
                 </div>
             {{/folders}}
             {{^folders}}
-                No folders to display
+                <div class="none">No folders to display</div>
             {{/folders}}
             </section>
         </script>
         <!-- Individual folder -->
         <script id="folder" type="text/template">
+            <div class="progress" style="width: {{percent}}"></div>
             <div class="top">
-                <div class="progress" style="width: {{percent}}"></div>
                 <div class="name">{{name}}</div>
             </div>
             <div class="bottom">
@@ -132,11 +142,12 @@
         <script id="account-form" type="text/template">
             <form id="account-info" autocomplete="off" spellcheck="false">
             {{#email}}
-                <h1>Account Info</h1>
+                <h1 class="title">Account Info</h1>
             {{/email}}
             {{^email}}
-                <h1>Add an Email Account</h1>
+                <h1 class="title">Add an Email Account</h1>
             {{/email}}
+                <h1 class="alt-title">Saving Account&hellip;</h1>
                 <div class="row">
                     <div class="three columns">
                         <label>Email</label>
@@ -179,6 +190,11 @@
                         <i class="icon-check"></i>
                         Save Account
                     </button>
+                {{#email}}
+                    <button type="button" class="cancel u-pull-right" id="account-cancel">
+                        Cancel
+                    </button>
+                {{/email}}
                 </div>
             </form>
         </script>

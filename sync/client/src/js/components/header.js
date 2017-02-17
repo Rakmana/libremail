@@ -1,7 +1,7 @@
 /**
  * Header Component
  */
-LibreMail.Components.Header = (function ( Const, Socket, Mustache ) {
+LibreMail.Components.Header = (function ( Const, Socket, Emitter, Mustache ) {
 'use strict';
 // Returns a new instance
 return function ( $root ) {
@@ -17,14 +17,19 @@ return function ( $root ) {
         status: $status.innerHTML,
         accounts: $accounts.innerHTML
     };
+    // Account email
+    var account;
     // State for restart command
     var isAsleep = false;
     // State for rendering the parent template
     var rootIsRendered = false;
     // DOM nodes for updating
+    var $optionsButton;
     var $statusSection;
     var $restartButton;
     var $accountsSection;
+    var $editAccountButton;
+    var $removeAccountButton;
 
     // Parse the templates
     Mustache.parse( tpl.header );
@@ -36,6 +41,7 @@ return function ( $root ) {
      * @param Object data
      */
     function render ( data ) {
+        account = data.account;
         // Store this for the restart button
         isAsleep = data.asleep;
 
@@ -62,17 +68,34 @@ return function ( $root ) {
         $statusSection = $root.querySelector( 'section.status' );
         $restartButton = $root.querySelector( 'button#restart' );
         $accountsSection = $root.querySelector( 'section.accounts' );
+        $editAccountButton = $root.querySelector( 'a#account-edit' );
+        $removeAccountButton = $root.querySelector( 'a#account-remove' );
+        $optionsButton = $root.querySelector( 'button#account-options' );
 
         // Attach event handlers to DOM elements.
         $restartButton.onclick = restart;
+        $editAccountButton.onclick = editAccount;
+        $removeAccountButton.onclick = removeAccount;
     }
 
     function tearDown () {
+        // Disable the buttons
+        if ( rootIsRendered ) {
+            $restartButton.className = 'disabled';
+            $optionsButton.className = 'disabled';
+            $accountsSection.className += ' disabled';
+        }
+
+        // Release memory
+        account = null;
         isAsleep = false;
         $statusSection = null;
         $restartButton = null;
+        $optionsButton = null;
         rootIsRendered = false;
         $accountsSection = null;
+        $editAccountButton = null
+        $removeAccountButton = null;
     }
 
     function restart () {
@@ -81,6 +104,33 @@ return function ( $root ) {
         }
 
         Socket.send( Const.MSG.RESTART );
+    }
+
+    function editAccount () {
+        Socket.sendTask(
+            Const.TASK.ACCOUNT_INFO, {
+                email: account
+            });
+    }
+
+    function removeAccount () {
+        var email = window.prompt(
+            "If you're sure you want to remove this account, " +
+            "then please type the full email address. " );
+
+        if ( email === account ) {
+            Socket.sendTask(
+                Const.TASK.REMOVE_ACCOUNT, {
+                    email: account
+                });
+        }
+        else {
+            Emitter.fire(
+                Const.EV.NOTIFICATION, {
+                    status: Const.STATUS.error,
+                    message: "You didn't type in the correct address."
+                });
+        }
     }
 
     function update ( data ) {
@@ -126,4 +176,4 @@ return function ( $root ) {
         render: render,
         tearDown: tearDown
     };
-}}( LibreMail.Const, LibreMail.Socket, Mustache ));
+}}( LibreMail.Const, LibreMail.Socket, LibreMail.Emitter, Mustache ));

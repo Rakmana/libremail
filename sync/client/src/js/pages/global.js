@@ -24,6 +24,7 @@ return function () {
         Emitter.on( Const.EV.WS_OPEN, online );
         Emitter.on( Const.EV.ACCOUNT, account );
         Emitter.on( Const.EV.WS_CLOSE, offline );
+        Emitter.on( Const.EV.ACCOUNT_INFO, editAccount );
         Emitter.on( Const.EV.NOTIFICATION, notification );
     }
 
@@ -117,6 +118,14 @@ return function () {
      */
     function account ( data ) {
         Accounts.update( data );
+    }
+
+    /**
+     * Opens the account edit screen and prevents stats from
+     * over-writing until the user closes it.
+     */
+    function editAccount ( data ) {
+        Accounts.render( data );
     }
 
     return {

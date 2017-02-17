@@ -186,6 +186,16 @@ class Daemon
     }
 
     /**
+     * Sends a SIGPWR to st sync process to stop it.
+     */
+    public function stopSync()
+    {
+        if ( isset( $this->processPids[ PROC_SYNC ] ) ) {
+            posix_kill( $this->processPids[ PROC_SYNC ], SIGPWR );
+        }
+    }
+
+    /**
      * Sends a SIGUSR2 to the sync process to get a stats update.
      */
     public function pollStats()
@@ -284,7 +294,7 @@ class Daemon
         catch ( Exception $e ) {
             return FALSE;
         }
-$this->log->addInfo( "READING: ". $message->getType() );
+
         switch ( $message->getType() ) {
             case Message::PID:
                 $this->processPids[ $process ] = $message->pid;
