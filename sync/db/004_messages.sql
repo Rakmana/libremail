@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `unique_id` int(10) unsigned DEFAULT NULL,
   `date_str` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
   `charset` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
-  `subject` varchar(270) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `subject` varchar(270) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `message_id` varchar(250) COLLATE utf8_unicode_ci DEFAULT NULL,
   `in_reply_to` varchar(250) COLLATE utf8_unicode_ci DEFAULT NULL,
   `size` int(10) unsigned DEFAULT NULL,
@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `from` text COLLATE utf8_unicode_ci,
   `cc` text COLLATE utf8_unicode_ci,
   `reply_to` text COLLATE utf8_unicode_ci,
-  `text_plain` text COLLATE utf8_unicode_ci,
-  `text_html` text COLLATE utf8_unicode_ci,
-  `references` text COLLATE utf8_unicode_ci,
-  `attachments` text COLLATE utf8_unicode_ci,
+  `text_plain` longtext COLLATE utf8mb4_unicode_ci,
+  `text_html` longtext COLLATE utf8mb4_unicode_ci,
+  `references` text COLLATE utf8mb4_unicode_ci,
+  `attachments` text COLLATE utf8mb4_unicode_ci,
   `seen` tinyint(1) unsigned DEFAULT NULL,
   `draft` tinyint(1) unsigned DEFAULT NULL,
   `recent` tinyint(1) unsigned DEFAULT NULL,
@@ -34,4 +34,4 @@ CREATE TABLE IF NOT EXISTS `messages` (
   INDEX (`deleted`),
   INDEX (`synced`),
   INDEX (`date`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

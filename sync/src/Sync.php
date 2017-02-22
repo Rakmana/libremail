@@ -174,7 +174,6 @@ class Sync
         }
 
         if ( ! $accounts ) {
-$this->log->debug( "No accounts found" );
             $this->stats->setActiveAccount( NULL );
 
             // If we're in daemon mode, just go to sleep. The script
@@ -238,7 +237,6 @@ $this->log->debug( "No accounts found" );
         }
 
         $this->checkForHalt();
-$this->log->debug( "Setting active email: ". $account->email );
         $this->stats->setActiveAccount( $account->email );
         $this->log->info( "Starting sync for {$account->email}" );
 
@@ -309,6 +307,7 @@ $this->log->debug( "Setting active email: ". $account->email );
         }
         catch ( Exception $e ) {
             $this->log->error( $e->getMessage() );
+            $this->checkForClosedConnection( $e );
             $waitSeconds = $this->config[ 'app' ][ 'sync' ][ 'wait_seconds' ];
             $this->log->info(
                 "Re-trying sync ({$this->retries[ $account->email ]}/".
@@ -363,7 +362,13 @@ $this->log->debug( "Setting active email: ". $account->email );
     public function disconnect()
     {
         if ( $this->mailbox ) {
-            $this->mailbox->disconnect();
+            try {
+                $this->mailbox->disconnect();
+            }
+            catch ( Exception $e ) {
+                $this->checkForClosedConnection( $e );
+                throw $e;
+            }
         }
 
         $this->mailbox = NULL;
@@ -478,6 +483,7 @@ $this->log->debug( "Setting active email: ". $account->email );
         }
         catch ( Exception $e ) {
             $this->log->error( $e->getMessage() );
+            $this->checkForClosedConnection( $e );
             $waitSeconds = $this->config[ 'app' ][ 'sync' ][ 'wait_seconds' ];
             $this->log->info(
                 "Re-trying folder sync ({$this->retriesFolders[ $account->email ]}/".
@@ -668,6 +674,7 @@ $this->log->debug( "Setting active email: ". $account->email );
         catch ( Exception $e ) {
             $this->stats->unsetActiveFolder();
             $this->log->error( substr( $e->getMessage(), 0, 500 ) );
+            $this->checkForClosedConnection( $e );
             $retryCount = $this->retriesMessages[ $account->email ];
             $waitSeconds = $this->config[ 'app' ][ 'sync' ][ 'wait_seconds' ];
             $this->log->info(
@@ -767,7 +774,10 @@ $this->log->debug( "Setting active email: ". $account->email );
                 'folder_id' => $folder->getId(),
                 'account_id' => $folder->getAccountId(),
             ]);
-            $message->setMessageData( $imapMessage );
+            $message->setMessageData( $imapMessage, [
+                // This will trim subjects to the max size
+                MessageModel::OPT_TRUNCATE_FIELDS => TRUE
+            ]);
         }
         catch ( PDOException $e ) {
             throw $e;
@@ -782,6 +792,7 @@ $this->log->debug( "Setting active email: ". $account->email );
             $this->log->warning(
                 "Failed download for message {$messageId}: ".
                 $e->getMessage() );
+            $this->checkForClosedConnection( $e );
             return;
         }
 
@@ -837,6 +848,13 @@ $this->log->debug( "Setting active email: ". $account->email );
         Message::send( new NotificationMessage( $status, $message ) );
     }
 
+    /**
+     * Checks if a halt command has been issued. This is a command
+     * to stop the sync. We want to do is gracefull though so the
+     * app checks in various places when it's save to halt.
+     * @throws StopException
+     * @throws TerminateException
+     */
     private function checkForHalt()
     {
         pcntl_signal_dispatch();
@@ -854,6 +872,26 @@ $this->log->debug( "Setting active email: ". $account->email );
             if ( $this->sleep !== TRUE ) {
                 throw new TerminateException;
             }
+        }
+    }
+
+    /**
+     * Checks the exception message for a "closed connection" string.
+     * This can happen when the IMAP socket is closed or fails. When
+     * this happens we want to terminate the sync and let the whole
+     * thing pick back up.
+     * @param Exception $e
+     * @throws StopException
+     */
+    private function checkForClosedConnection( Exception $e )
+    {
+        if ( strpos( $e->getMessage(), "connection closed?" ) !== FALSE ) {
+            $this->sendMessage(
+                "The IMAP connection was lost. Your internet connection ".
+                "could be down or it could just be a network error. The ".
+                "system will sleep for a bit before re-trying.".
+                STATUS_ERROR );
+            throw new StopException;
         }
     }
 

@@ -6,6 +6,8 @@ use Fn
   , DateTime
   , App\Model
   , Belt\Belt
+  , PDOException
+  , ForceUTF8\Encoding
   , Particle\Validator\Validator
   , Pb\Imap\Message as ImapMessage
   , App\Traits\Model as ModelTrait
@@ -45,6 +47,9 @@ class Message extends Model
     public $attachments;
 
     private $unserializedAttachments;
+
+    // Options
+    const OPT_TRUNCATE_FIELDS = 'truncate_fields';
 
     use ModelTrait;
 
@@ -244,6 +249,15 @@ class Message extends Model
                 ));
         }
 
+        // Update flags to have the right data type
+        $this->updateFlagValues( $data, [
+            'seen', 'draft', 'recent', 'flagged',
+            'deleted', 'answered'
+        ]);
+        $this->updateUtf8Values( $data, [
+            'subject', 'text_html', 'text_plain'
+        ]);
+
         // Check if this message exists
         $exists = $this->db()
             ->select()
@@ -253,16 +267,41 @@ class Message extends Model
             ->where( 'account_id', '=', $this->account_id )
             ->execute()
             ->fetchObject();
+        $updateMessage = function ( $db, $id, $data ) {
+            return $db
+                ->update( $data )
+                ->table( 'messages' )
+                ->where( 'id', '=', $id )
+                ->execute();
+        };
+        $insertMessage = function ( $db, $data ) {
+            return $db
+                ->insert( array_keys( $data ) )
+                ->into( 'messages' )
+                ->values( array_values( $data ) )
+                ->execute();
+        };
 
         if ( $exists ) {
             $this->id = $exists->id;
             unset( $data[ 'id' ] );
             unset( $data[ 'created_at' ] );
-            $updated = $this->db()
-                ->update( $data )
-                ->table( 'messages' )
-                ->where( 'id', '=', $this->id )
-                ->execute();
+
+            try {
+                $updated = $updateMessage( $this->db(), $this->id, $data );
+            }
+            catch ( PDOException $e ) {
+                // Check for bad UTF-8 errors
+                if ( strpos( $e->getMessage(), "Incorrect string value:" ) ) {
+                    $data[ 'subject' ] = Encoding::fixUTF8( $data[ 'subject' ] );
+                    $data[ 'text_html' ] = Encoding::fixUTF8( $data[ 'text_html' ] );
+                    $data[ 'text_plain' ] = Encoding::fixUTF8( $data[ 'text_plain' ] );
+                    $newMessageId = $updateMessage( $this->db(), $data );
+                }
+                else {
+                    throw $e;
+                }
+            }
 
             if ( $updated === FALSE ) {
                 throw new DatabaseUpdateException(
@@ -276,11 +315,22 @@ class Message extends Model
         $createdAt = new DateTime;
         unset( $data[ 'id' ] );
         $data[ 'created_at' ] = $createdAt->format( DATE_DATABASE );
-        $newMessageId = $this->db()
-            ->insert( array_keys( $data ) )
-            ->into( 'messages' )
-            ->values( array_values( $data ) )
-            ->execute();
+
+        try {
+            $newMessageId = $insertMessage( $this->db(), $data );
+        }
+        catch ( PDOException $e ) {
+            // Check for bad UTF-8 errors
+            if ( strpos( $e->getMessage(), "Incorrect string value:" ) ) {
+                $data[ 'subject' ] = Encoding::fixUTF8( $data[ 'subject' ] );
+                $data[ 'text_html' ] = Encoding::fixUTF8( $data[ 'text_html' ] );
+                $data[ 'text_plain' ] = Encoding::fixUTF8( $data[ 'text_plain' ] );
+                $newMessageId = $insertMessage( $this->db(), $data );
+            }
+            else {
+                throw $e;
+            }
+        }
 
         if ( ! $newMessageId ) {
             throw new DatabaseInsertException(
@@ -295,9 +345,14 @@ class Message extends Model
      * Saves the meta information and content for a message as data
      * on the class object.
      * @param array $meta
+     * @param array $options
      */
-    public function setMessageData( ImapMessage $message )
+    public function setMessageData( ImapMessage $message, array $options = [] )
     {
+        if ( Fn\get( $options, self::OPT_TRUNCATE_FIELDS ) === TRUE ) {
+            $message->subject = substr( $message->subject, 0, 270 );
+        }
+
         $this->setData([
             'size' => $message->size,
             'date' => $message->date,
