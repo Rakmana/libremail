@@ -7,12 +7,14 @@ use App\Log
   , Exception
   , App\Command
   , App\Message
+  , PDOException
   , SplObjectStorage
   , React\Stream\Stream
   , Ratchet\ConnectionInterface
   , React\EventLoop\LoopInterface
   , Ratchet\MessageComponentInterface
-  , App\Traits\JsonMessage as JsonMessageTrait;
+  , App\Traits\JsonMessage as JsonMessageTrait
+  , App\Exceptions\Terminate as TerminateException;
 
 class StatsServer implements MessageComponentInterface
 {
@@ -43,7 +45,14 @@ class StatsServer implements MessageComponentInterface
      */
     public function broadcast( $message )
     {
-        $this->lastMessage = $message;
+        $obj = @json_decode( $message );
+
+        if ( ! $this->lastMessage
+            || ( isset( $obj->type )
+                && $obj->type === Message::STATS ) )
+        {
+            $this->lastMessage = $message;
+        }
 
         foreach ( $this->clients as $client ) {
             $client->send( $message );
@@ -75,7 +84,11 @@ class StatsServer implements MessageComponentInterface
     {
         $this->log->notice(
             "Error encountered from socket connection: ". $e->getMessage() );
+        $this->clients->detach( $conn );
         $conn->close();
+
+        // Forward the error
+        throw $e;
     }
 
     public function onMessage( ConnectionInterface $from, $message )
@@ -92,7 +105,7 @@ class StatsServer implements MessageComponentInterface
         // detect this format and keep reading until we reach the
         // end of the JSON stream.
         $this->read->on( 'data', function ( $data ) {
-            $message = $this->processMessage( $data, NULL );
+            $this->processMessage( $data, NULL );
         });
 
         $this->write = new Stream( STDOUT, $this->loop );
@@ -130,9 +143,16 @@ class StatsServer implements MessageComponentInterface
                     }
                 }
             }
+            // Keep throwing these
+            catch ( PDOException $e ) {
+                throw $e;
+            }
+            catch ( TerminateException $e ) {
+                throw $e;
+            }
+            // Otherwise just log and move on
             catch ( Exception $e ) {
                 $this->log->notice( $e->getMessage() );
-                return;
             }
         }
     }

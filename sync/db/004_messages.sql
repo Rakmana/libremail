@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `account_id` int(10) unsigned NOT NULL,
   `folder_id` int(10) unsigned NOT NULL,
   `unique_id` int(10) unsigned DEFAULT NULL,
+  `thread_id` int(10) unsigned DEFAULT NULL,
   `date_str` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
   `charset` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
   `subject` varchar(270) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -29,10 +30,13 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `date` datetime DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  INDEX (`date`),
+  INDEX (`synced`),
+  INDEX (`deleted`),
   INDEX (`folder_id`),
   INDEX (`unique_id`),
+  INDEX (`thread_id`),
   INDEX (`account_id`),
-  INDEX (`deleted`),
-  INDEX (`synced`),
-  INDEX (`date`)
+  INDEX (`message_id`(16))
+  INDEX (`in_reply_to`(16))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
